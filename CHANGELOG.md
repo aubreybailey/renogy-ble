@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## [2.5.0](https://github.com/IAmTheMitchell/renogy-ble/compare/v2.4.1...v2.5.0) (2026-08-16)
+
+
+### Features
+
+* make failure grace and reconnect interval configurable per device ([#126](https://github.com/IAmTheMitchell/renogy-ble/issues/126)) ([72648f0](https://github.com/IAmTheMitchell/renogy-ble/commit/72648f07a763d5922a111286cce66307b3c797da))
+* read REGO inverter charging, solar, and setpoint registers ([#125](https://github.com/IAmTheMitchell/renogy-ble/issues/125)) ([15a3e69](https://github.com/IAmTheMitchell/renogy-ble/commit/15a3e69216afcbacfb7c249eb5063037d5c3d5ea))
+
+
+### Bug Fixes
+
+* read RNGRBP batteries and scale pro cell voltage as 0.1 V (follow-on to [#120](https://github.com/IAmTheMitchell/renogy-ble/issues/120)) ([#124](https://github.com/IAmTheMitchell/renogy-ble/issues/124)) ([0a11218](https://github.com/IAmTheMitchell/renogy-ble/commit/0a11218368b35b087a23c1db8486b114c158d8fe))
+
+
+### Performance Improvements
+
+* reuse indexed register parsers ([#141](https://github.com/IAmTheMitchell/renogy-ble/issues/141)) ([1efe2f1](https://github.com/IAmTheMitchell/renogy-ble/commit/1efe2f1ed2409ac130c22497c709e544e98376df))
+
 ## [2.4.1](https://github.com/IAmTheMitchell/renogy-ble/compare/v2.4.0...v2.4.1) (2026-08-07)
 
 
