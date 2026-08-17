@@ -8,6 +8,7 @@ own readout: 13.3 V, ~2 A discharge, 3.3 V/cell, ~23 C, 500 Ah.
 
 import renogy_ble
 from renogy_ble.battery import (
+    BATTERY_VARIANT_LEGACY,
     BATTERY_VARIANT_PRO,
     BATTERY_VARIANT_RNGPRO,
     build_battery_command,
@@ -67,13 +68,35 @@ def test_rngpro_cell_status_scaling() -> None:
 
 def test_rngpro_mosfet_status_no_false_fault() -> None:
     parsed = parse_battery_mosfet_status(MOSFET_STATUS, variant=BATTERY_VARIANT_RNGPRO)
-    # The generic 14-byte fault span would yield a spurious huge value here.
-    assert "battery_problem_code" not in parsed
+    # This frame carries no warning bits: registers 0x13F2/0x13F3 are 0x0006 and
+    # 0x0000, and bits 17/18 are MOSFET state rather than warnings.
+    assert parsed["battery_problem_code"] == 0
+    assert parsed["battery_warnings"] == []
     assert parsed["charge_mosfet_enabled"] is True
     assert parsed["discharge_mosfet_enabled"] is True
     assert parsed["heater_enabled"] is False
 
 
-def test_existing_pro_mosfet_status_keeps_fault_decoder() -> None:
+def test_pro_mosfet_status_reports_no_fault_for_clean_frame() -> None:
+    # Previously the 14-byte span swept in the 0xAA sentinel at register 0x13ED
+    # and reported a large, permanently-nonzero code for this same frame.
     parsed = parse_battery_mosfet_status(MOSFET_STATUS, variant=BATTERY_VARIANT_PRO)
-    assert parsed["battery_problem_code"] > 0
+    assert parsed["battery_problem_code"] == 0
+    assert parsed["battery_warnings"] == []
+
+
+def test_mosfet_status_decodes_documented_warning_bits() -> None:
+    # Set 0x13F3 bit 2 (Battery Undervoltage) and 0x13F2 bit 14 (Charge High
+    # Temperature Protection, global bit 30) on top of the MOSFET bits.
+    frame = bytearray(MOSFET_STATUS)
+    frame[15:17] = (0x4006).to_bytes(2, "big")
+    frame[17:19] = (0x0004).to_bytes(2, "big")
+    parsed = parse_battery_mosfet_status(bytes(frame), variant=BATTERY_VARIANT_LEGACY)
+    assert parsed["battery_warnings"] == [
+        "battery_undervoltage_warning",
+        "charge_high_temperature_protection",
+    ]
+    assert parsed["battery_problem_code"] == (1 << 2) | (1 << 30)
+    # MOSFET bits must not leak into the problem code.
+    assert parsed["charge_mosfet_enabled"] is True
+    assert parsed["discharge_mosfet_enabled"] is True

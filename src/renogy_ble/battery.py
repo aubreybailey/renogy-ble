@@ -20,6 +20,10 @@ BATTERY_PRO_NAME_PREFIXES = (BATTERY_RNGRBP_NAME_PREFIX, "RNGC")
 BATTERY_RNGPRO_NAME_PREFIXES = ("RNGPRO",)
 BATTERY_LEGACY_NAME_PREFIX = "BT-TH-"
 BATTERY_LEGACY_NAME_MARKERS = ("BATT", "BATTERY")
+# tuner168 RS485 bridge modules advertise as RNGTM<serial> rather than BT-TH-*,
+# but expose the same ffd0/ffd1 + fff1 characteristics and answer the legacy
+# register map at device id 0x30. Confirmed on RBT12100LFPTMBT.
+BATTERY_LEGACY_MODULE_NAME_PREFIXES = ("RNGTM",)
 BATTERY_PRO_MANUFACTURER_ID = 0xE14C
 
 BATTERY_PROTOCOL_DEVICE_IDS: dict[BatteryVariant, int] = {
@@ -33,6 +37,30 @@ BATTERY_DEFAULT_MODELS: dict[BatteryVariant, str] = {
     BATTERY_VARIANT_PRO: "Renogy BT Battery Pro",
     BATTERY_VARIANT_RNGPRO: "Renogy BT Battery Pro",
 }
+
+# Battery warning bitmask, assembled from two registers read by "mosfet_status":
+#
+#     warn32 = (reg 0x13F2 << 16) | reg 0x13F3
+#
+# Bit numbering is from the LSB of that 32-bit value, matching the "B<n>" codes
+# the vendor app emits (Renogy DC Home 1.10.78, BatWarnConsts + ModBusUtils.A,
+# which reads the same two registers out of the 5104-5131 response).
+#
+# Bits 17 and 18 carry charge/discharge MOSFET state rather than warnings, which
+# is why the mask below is applied before reporting a problem code.
+BATTERY_WARNING_BITS: dict[int, str] = {
+    0: "battery_cell_undervoltage_warning",
+    2: "battery_undervoltage_warning",
+    4: "charge_low_temperature_warning",
+    5: "charge_high_temperature_warning",
+    6: "discharge_low_temperature_warning",
+    7: "discharge_high_temperature_warning",
+    22: "battery_high_voltage_limit_reached",
+    29: "charge_low_temperature_protection",
+    30: "charge_high_temperature_protection",
+}
+
+BATTERY_WARNING_MASK: int = sum(1 << bit for bit in BATTERY_WARNING_BITS)
 
 # Format: (register, word_count)
 BATTERY_COMMANDS: dict[str, tuple[int, int]] = {
@@ -60,6 +88,11 @@ def battery_cell_voltage_divisor(
 ) -> BatteryCellVoltageDivisor | None:
     """Return a confirmed cell-voltage divisor, if the family identifies one."""
     if variant == BATTERY_VARIANT_RNGPRO or is_rngr_bp_battery_name(name):
+        return 10
+    # tuner168 bridge modules report cell voltage in 0.1 V units, not mV.
+    # Confirmed on RBT12100LFPTMBT: raw 0x0021 (33) is 3.3 V, cross-checked
+    # against the pack's own BMS radio reporting 3347 mV.
+    if (name or "").strip().startswith(BATTERY_LEGACY_MODULE_NAME_PREFIXES):
         return 10
     if variant != BATTERY_VARIANT_PRO or (name or "").strip().startswith("RNGC"):
         return 1000
@@ -101,6 +134,9 @@ def is_supported_battery_name(
 
 def _is_legacy_battery_name(name: str) -> bool:
     """Return True only for legacy battery advertisements, not shared BT-TH devices."""
+    if name.startswith(BATTERY_LEGACY_MODULE_NAME_PREFIXES):
+        return True
+
     if not name.startswith(BATTERY_LEGACY_NAME_PREFIX):
         return False
 
@@ -249,26 +285,47 @@ def parse_battery_cell_status(
     return parsed
 
 
+def decode_battery_warnings(warn32: int) -> list[str]:
+    """Return the labels of every documented warning bit set in ``warn32``."""
+    return [
+        label
+        for bit, label in sorted(BATTERY_WARNING_BITS.items())
+        if warn32 & (1 << bit)
+    ]
+
+
 def parse_battery_mosfet_status(
     data: bytes,
     *,
     variant: BatteryVariant,
 ) -> dict[str, Any]:
-    """Parse fault and MOSFET flags."""
+    """Parse the MOSFET flags and the battery warning bitmask.
+
+    ``data`` is the response to reading 8 registers from 0x13EC (5100), so the
+    register values sit at:
+
+        5100 data[3:5]    5104 data[11:13]
+        5101 data[5:7]    5105 data[13:15]
+        5102 data[7:9]    5106 data[15:17]   <- warning high word
+        5103 data[9:11]   5107 data[17:19]   <- warning low word
+    """
     parsed: dict[str, Any] = {
         "charge_mosfet_enabled": bool(data[16] & 0x2),
         "discharge_mosfet_enabled": bool(data[16] & 0x4),
         "heater_enabled": bool(data[17] & 0x20),
     }
 
-    # RNGPRO-family batteries do not expose the fault bitmask across the same
-    # 14-byte span; the generic decode picks up non-fault status bytes (e.g.
-    # 0xAA) and yields a spurious, permanently-nonzero value. Until the RNGPRO
-    # fault-register layout is characterized, omit the problem code so consumers
-    # represent it as unknown rather than falsely reporting no fault.
-    if variant != BATTERY_VARIANT_RNGPRO:
-        parsed["battery_problem_code"] = int.from_bytes(data[3:17], byteorder="big") & (
-            ~0xE
-        )
+    if len(data) < 19:
+        return parsed
+
+    warn_high = int.from_bytes(data[15:17], byteorder="big")  # register 0x13F2
+    warn_low = int.from_bytes(data[17:19], byteorder="big")  # register 0x13F3
+    warn32 = (warn_high << 16) | warn_low
+
+    # Only documented bits are reported. Bits 17 and 18 mirror the charge and
+    # discharge MOSFET state above and are deliberately excluded -- including
+    # them is what previously produced a large, permanently-nonzero code.
+    parsed["battery_problem_code"] = warn32 & BATTERY_WARNING_MASK
+    parsed["battery_warnings"] = decode_battery_warnings(warn32)
 
     return parsed

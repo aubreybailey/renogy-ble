@@ -213,14 +213,18 @@ def test_parse_battery_cell_status_and_faults() -> None:
     assert parsed_cells["battery_temperature"] == 22.0
 
     fault_payload = bytearray(16)
-    fault_payload[13] = 0x16
-    fault_payload[14] = 0x20
+    fault_payload[13] = 0x16  # reg 0x13F2 low byte: MOSFET bits (global 17, 18)
+    fault_payload[14] = 0x20  # reg 0x13F3 high byte: heater bit (global 13)
+    fault_payload[15] = 0x04  # reg 0x13F3 bit 2: Battery Undervoltage Warning
     fault_frame = _battery_frame(0x30, bytes(fault_payload))
     parsed_faults = parse_battery_mosfet_status(
         fault_frame, variant=BATTERY_VARIANT_LEGACY
     )
 
-    assert parsed_faults["battery_problem_code"] > 0
+    # Only the documented warning bit is reported; MOSFET and heater status bits
+    # sharing the same 32-bit field are excluded.
+    assert parsed_faults["battery_problem_code"] == 1 << 2
+    assert parsed_faults["battery_warnings"] == ["battery_undervoltage_warning"]
     assert parsed_faults["charge_mosfet_enabled"] is True
     assert parsed_faults["discharge_mosfet_enabled"] is True
     assert parsed_faults["heater_enabled"] is True
